@@ -1,77 +1,118 @@
-// Currency Converter Logic
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using Newtonsoft.Json;
+using Microsoft.Data.Sqlite;
+using System.Net.Http;
+using ConsoleApp5;
+using System.Globalization;
 
-internal class CurrencyConverter
+namespace ConsoleApp5
 {
-    private static readonly HttpClient _httpClient = new HttpClient();
-    private static readonly MemoryCache _cache = new MemoryCache("CurrencyCache");
-
-    private static readonly string apiKey = "1b29b58f1aa826b79ead3bb5";
-    private static readonly string apiUrl = "https://v6.exchangerate-api.com/v6/{0}/latest/{1}"; // API для получения курсов валют
-
-    public async Task<decimal?> GetConversionRateAsync(string fromCurrency, string toCurrency)
+    internal static class CurrencyConverter
     {
-        string cacheKey = $"conversion_rate_{fromCurrency}_to_{toCurrency}";
-
-        if (_cache.Contains(cacheKey))
+        public static readonly List<string> Currencies = new List<string>
         {
-            Console.WriteLine("Data received from cache.");
-            return (decimal?)_cache.Get(cacheKey);
+            "RUB",
+            "USD",
+            "EUR",
+            "GBP",
+            "JPY",
+            "BYN",
+            "PLN",
+            "CNY",
+            "TRY",
+            "KZT"
+        };
+       
+        private static readonly string apiKey = "182e065a094f208e4790ad5b"; // Ключ API
+        private static readonly string apiUrl = "https://v6.exchangerate-api.com/v6/{0}/latest/{1}"; // API для получения курсов валют
+        
+        private const string connectionString = $"Data Source=ExchangeRates.db"; // Строка подключения к БД
+        private static readonly HttpClient _httpClient = new HttpClient();
+
+        public static string dbQuery = "INSERT INTO ExchangeRates (FromCurrency, ToCurrency, Rate) VALUES "; // Заготовка для запроса на добавление всех валют в БД
+        public static string dbQueryText; 
+
+
+        public static async Task GetExchangeRates()
+        {
+            foreach (string currrency in Currencies)
+            {
+                string url = string.Format(apiUrl, apiKey, currrency); // Подстановка в ссылку API-ключа и необходимой валюты
+                HttpResponseMessage response = await _httpClient.GetAsync(url);
+                response.EnsureSuccessStatusCode();
+
+                string content = await response.Content.ReadAsStringAsync();
+                var rates = JsonConvert.DeserializeObject<ExchangeRatesResponse>(content);
+
+
+                foreach (var rate in rates.Rates)
+                {
+                    if (Currencies.Contains(rate.Key))
+                    {
+                        string insert = $"('{currrency}', '{rate.Key}', {rate.Value.ToString(CultureInfo.InvariantCulture)}),";
+                        dbQuery += insert;
+                    }
+                    dbQueryText = dbQuery.Substring(0,dbQuery.Length - 1) + ';'; // Удаляю запятую в конце и заменяю её на ';'
+                }
+            }
         }
 
-
-        Console.WriteLine("Data received from API.");
-
-        string url = string.Format(apiUrl, apiKey, fromCurrency);
-        Console.WriteLine(url);
-        var response = await _httpClient.GetStringAsync(url);
-        var data = JsonConvert.DeserializeObject<ApiResponse>(response);
-
-        if (data?.ConversionRates != null && data.ConversionRates.ContainsKey(toCurrency))
+        public static async Task ClearDB()
         {
-            var rate = data.ConversionRates[toCurrency];
+            using (var connection = new SqliteConnection(connectionString))
+            {
+                connection.Open();
 
-            _cache.Add(cacheKey, rate, DateTime.Now.AddHours(1));
-            Console.WriteLine("Cache added");
-            return rate;
+                string query = "DELETE FROM ExchangeRates";
+                using (SqliteCommand command = new SqliteCommand(query, connection))
+                {
+                    command.ExecuteNonQuery();
+                }
+            }
         }
 
-        return null;
+        public static async Task UpdateDBAsync()
+        {
+            await GetExchangeRates(); // Создание INSERT-запроса
+            await ClearDB(); // Очистка БД от устаревших курсов валют
+
+            using (SqliteConnection connection = new SqliteConnection(connectionString))
+            {
+                connection.Open();
+
+                using (SqliteCommand command = new SqliteCommand(dbQueryText, connection))
+                {
+                    command.ExecuteNonQuery();
+                    Console.WriteLine("success db");
+                }
+            }
+        }
+ 
+        public static async Task<decimal?> GetRate(string fromCurrency, string toCurrency)
+        {
+            using (SqliteConnection connection = new SqliteConnection(connectionString))
+            {
+                connection.Open();
+
+                string query = $"SELECT Rate FROM ExchangeRates WHERE FromCurrency = '{fromCurrency}' and ToCurrency = '{toCurrency}'";
+
+                using (SqliteCommand command = new SqliteCommand(query, connection))
+                {
+                    using (SqliteDataReader reader = command.ExecuteReader())
+                    {
+                        while (reader.Read())
+                        {
+                            return Convert.ToDecimal(reader[0]);
+                        }
+                    }
+                }
+            }
+            return 0;
+        }
     }
-}
 
-internal class Program
-{
-    static async Task Main(string[] args)
-    {
-        var converter = new CurrencyConverter();
-
-        Console.Write("Initial currency (USD): ");
-        string fromCurrency = Console.ReadLine().ToUpper();
-        Console.Write("Final currency (EUR): ");
-        string toCurrency = Console.ReadLine().ToUpper();
-        Console.Write("Amount to convert: ");
-        decimal amount = Convert.ToDecimal(Console.ReadLine());
-
-        decimal? rate = await converter.GetConversionRateAsync(fromCurrency, toCurrency);
-        decimal? result = amount * rate;
-
-        Console.WriteLine(result);
-
-
-        decimal? rate1 = await converter.GetConversionRateAsync(fromCurrency, toCurrency);
-        decimal? result1 = (amount* 2) * rate;
-
-        Console.WriteLine(result1);
-
-        Console.ReadKey();
-    }
-}
-
-internal class ApiResponse
-{
-    public bool Success { get; set; }
-    public string BaseCode { get; set; }
-
-    [JsonProperty("conversion_rates")]
-    public Dictionary<string, decimal> ConversionRates { get; set; }
 }
